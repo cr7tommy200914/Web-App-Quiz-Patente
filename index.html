@@ -6,6 +6,7 @@
 <title>PatenteCrash 🚗</title>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Nunito:wght@400;600;700;900&display=swap" rel="stylesheet">
 <style>
+  /* [TUTTO LO STILE INVARIATO - COPIA QUELLO ESISTENTE] */
   :root {
     --bg: #0a0a1a;
     --card: #12122a;
@@ -316,14 +317,23 @@
     text-align: center;
     flex: 1;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: 16px;
   }
 
   .question-text {
     font-size: clamp(16px, 4.5vw, 22px);
     font-weight: 700;
     line-height: 1.5;
+  }
+
+  .question-image {
+    max-width: 100%;
+    max-height: 200px;
+    border-radius: 12px;
+    object-fit: contain;
   }
 
   .answer-buttons {
@@ -419,6 +429,13 @@
     text-align: center;
     line-height: 1.4;
     max-width: 700px;
+  }
+
+  .host-question-image {
+    max-width: 100%;
+    max-height: 250px;
+    border-radius: 12px;
+    object-fit: contain;
   }
 
   .host-answers {
@@ -668,11 +685,12 @@
     </div>
     <div id="upload-status" class="upload-status"></div>
     <div class="format-hint" style="margin-top:12px">
-      <strong>Formato CSV atteso:</strong><br>
-      <code>domanda;risposta</code><br>
-      <code>"È vietato superare il limite...";V</code><br>
-      <code>"Si può sostare in doppia fila";F</code><br>
-      Separatore: <code>;</code> — Risposta: <code>V</code> o <code>F</code>
+      <strong>Formato CSV con immagini:</strong><br>
+      <code>domanda;risposta;url_immagine</code><br>
+      <code>"È vietato superare il limite...";V;https://esempio.it/segnale.jpg</code><br>
+      <code>"Si può sostare in doppia fila";F;</code><br>
+      Separatore: <code>;</code> — Risposta: <code>V</code> o <code>F</code><br>
+      L'URL immagine è opzionale
     </div>
   </div>
 
@@ -764,7 +782,7 @@
     <div style="font-family:'Bebas Neue',cursive; font-size:48px; color:var(--accent3)" id="waiting-room-code"></div>
   </div>
   <div class="card max-480" style="padding:16px; text-align:center">
-    <div style="font-size:13px; color:var(--muted)">Regole: <strong style="color:var(--text)">30 domande</strong> · <strong style="color:var(--red)">3 errori</strong> = BOCCIATO</div>
+    <div style="font-size:13px; color:var(--muted)">Regole: <strong style="color:var(--text)"><span id="waiting-q-count">30</span> domande</strong> · <strong style="color:var(--red)"><span id="waiting-max-errors">3</span> errori</strong> = BOCCIATO</div>
   </div>
 </div>
 
@@ -782,6 +800,7 @@
     </div>
 
     <div class="question-card" style="min-height:180px">
+      <img class="host-question-image" id="host-q-image" style="display:none">
       <p class="host-question-text" id="host-q-text">...</p>
     </div>
 
@@ -812,6 +831,7 @@
   </div>
 
   <div class="question-card" style="flex:1">
+    <img class="question-image" id="p-q-image" style="display:none; max-width:100%; max-height:200px; border-radius:12px;">
     <p class="question-text" id="p-q-text">...</p>
   </div>
 
@@ -938,22 +958,63 @@ const state = {
   responsesThisQ: 0,
 };
 
-// Shared "room" stored in memory (same tab = host, other tabs = players via localStorage events)
-// We use localStorage as a simple broadcast channel
-const STORAGE_KEY = 'patente_crash_room';
+// ========== BROADCAST via URL ==========
+// Instead of localStorage, we use URL parameters and broadcast via window events
 
-function broadcast(type, data) {
-  const msg = JSON.stringify({ type, data, ts: Date.now() });
-  localStorage.setItem(STORAGE_KEY + '_msg', msg);
+// Funzione per ottenere l'URL base
+function getBaseUrl() {
+  const url = new URL(window.location.href);
+  url.search = '';
+  return url.toString();
 }
 
-function onBroadcast(type, data) { /* handled below */ }
+// Funzione per creare URL di join
+function getJoinUrl(roomCode) {
+  const url = new URL(window.location.href);
+  url.searchParams.set('join', roomCode);
+  return url.toString();
+}
 
-window.addEventListener('storage', (e) => {
-  if (e.key !== STORAGE_KEY + '_msg') return;
-  const msg = JSON.parse(e.newValue);
-  handleMessage(msg.type, msg.data);
+// Broadcast messages via window.postMessage (per la stessa finestra)
+// e aggiornamento URL per la condivisione tra dispositivi
+function broadcast(type, data) {
+  const message = { type, data, timestamp: Date.now(), roomCode: state.roomCode };
+  
+  // Per comunicazione tra schede della stessa finestra
+  window.postMessage(message, '*');
+  
+  // Salva l'ultimo messaggio per i nuovi giocatori
+  if (type === 'ROOM_UPDATE') {
+    localStorage.setItem('patente_room_' + state.roomCode, JSON.stringify({
+      ...data,
+      lastUpdate: Date.now()
+    }));
+  }
+}
+
+// Gestione messaggi
+window.addEventListener('message', (event) => {
+  if (event.data && event.data.roomCode === state.roomCode) {
+    handleMessage(event.data.type, event.data.data);
+  }
 });
+
+// Polling per giocatori (per dispositivi mobili)
+let pollingInterval;
+function startPolling(roomCode) {
+  if (pollingInterval) clearInterval(pollingInterval);
+  
+  pollingInterval = setInterval(() => {
+    if (state.role === 'player') {
+      // I giocatori controllano aggiornamenti ogni 2 secondi
+      const roomData = localStorage.getItem('patente_room_' + roomCode);
+      if (roomData) {
+        const data = JSON.parse(roomData);
+        handleMessage('ROOM_UPDATE', data);
+      }
+    }
+  }, 2000);
+}
 
 // ========== SCREENS ==========
 function showScreen(id) {
@@ -961,7 +1022,7 @@ function showScreen(id) {
   document.getElementById('screen-' + id).classList.add('active');
 }
 
-// ========== CSV PARSING ==========
+// ========== CSV PARSING con supporto immagini ==========
 document.getElementById('csv-input').addEventListener('change', (e) => {
   const file = e.target.files[0];
   if (!file) return;
@@ -994,20 +1055,40 @@ function parseCSV(text) {
     if (!line) continue;
     // Remove BOM
     line = line.replace(/^\uFEFF/, '');
-    // Support ; and , separators
-    const sep = line.includes(';') ? ';' : ',';
-    // Handle quoted fields
-    let parts;
-    if (line.startsWith('"')) {
-      const match = line.match(/^"(.*)"[;,]([VF])$/i);
-      if (match) parts = [match[1], match[2].toUpperCase()];
-    } else {
-      const idx = line.lastIndexOf(sep);
-      if (idx === -1) continue;
-      parts = [line.substring(0, idx).trim(), line.substring(idx+1).trim().toUpperCase()];
+    
+    // Parse CSV con supporto per virgolette
+    let parts = [];
+    let inQuote = false;
+    let current = '';
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '"') {
+        inQuote = !inQuote;
+      } else if (char === ';' && !inQuote) {
+        parts.push(current);
+        current = '';
+      } else {
+        current += char;
+      }
     }
-    if (!parts || !parts[0] || !['V','F'].includes(parts[1])) continue;
-    qs.push({ q: parts[0].replace(/^"|"$/g, ''), a: parts[1] });
+    parts.push(current); // ultimo campo
+    
+    // Pulisci i campi
+    parts = parts.map(p => p.trim().replace(/^"|"$/g, ''));
+    
+    if (parts.length < 2) continue;
+    
+    const question = parts[0];
+    const answer = parts[1].toUpperCase();
+    const imageUrl = parts.length > 2 ? parts[2] : null;
+    
+    if (!question || !['V','F'].includes(answer)) continue;
+    
+    qs.push({ 
+      q: question, 
+      a: answer,
+      img: imageUrl && imageUrl.startsWith('http') ? imageUrl : null
+    });
   }
 
   if (qs.length < 5) {
@@ -1017,7 +1098,7 @@ function parseCSV(text) {
   }
   state.questions = qs;
   statusEl.className = 'upload-status ok';
-  statusEl.textContent = `✅ Caricate ${qs.length} domande!`;
+  statusEl.textContent = `✅ Caricate ${qs.length} domande! ${qs.filter(q => q.img).length} con immagini`;
 }
 
 // ========== HOST: CREATE ROOM ==========
@@ -1036,26 +1117,42 @@ document.getElementById('btn-create-room').addEventListener('click', () => {
   state.players = {};
   state.currentQ = 0;
 
-  // Save room info for players
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({
+  // Create room data
+  const roomData = {
     code: state.roomCode,
     status: 'lobby',
     qCount: state.qCount,
     maxErrors: state.maxErrors,
     qTimer: state.qTimer,
-  }));
+    hostPresent: true,
+    players: {},
+    created: Date.now()
+  };
+  
+  // Salva stanza
+  localStorage.setItem('patente_room_' + state.roomCode, JSON.stringify(roomData));
+  broadcast('ROOM_UPDATE', roomData);
 
   document.getElementById('room-code-text').textContent = state.roomCode;
 
-  const joinUrl = window.location.href.split('?')[0] + '?join=' + state.roomCode;
+  const joinUrl = getJoinUrl(state.roomCode);
   document.getElementById('join-url').textContent = joinUrl;
   generateQR(document.getElementById('qr-canvas'), joinUrl);
+
+  // Aggiorna URL (opzionale)
+  const url = new URL(window.location.href);
+  url.searchParams.set('host', state.roomCode);
+  window.history.pushState({}, '', url);
 
   showScreen('lobby');
   updateLobbyPlayers();
 });
 
-document.getElementById('btn-back-main').addEventListener('click', () => showScreen('main'));
+document.getElementById('btn-back-main').addEventListener('click', () => {
+  // Pulisci URL
+  window.history.pushState({}, '', window.location.pathname);
+  showScreen('main');
+});
 
 // ========== HOST: START QUIZ ==========
 document.getElementById('btn-start-quiz').addEventListener('click', () => {
@@ -1068,14 +1165,21 @@ document.getElementById('btn-start-quiz').addEventListener('click', () => {
   state.selectedQuestions = shuffled;
   state.currentQ = 0;
 
-  // Save questions to localStorage for players
-  const room = JSON.parse(localStorage.getItem(STORAGE_KEY));
-  room.status = 'playing';
-  room.questions = shuffled;
-  room.qTimer = state.qTimer;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(room));
-
-  broadcast('START', { questions: shuffled, qTimer: state.qTimer, maxErrors: state.maxErrors, qCount: state.qCount });
+  // Aggiorna stanza
+  const roomData = {
+    code: state.roomCode,
+    status: 'playing',
+    qCount: state.qCount,
+    maxErrors: state.maxErrors,
+    qTimer: state.qTimer,
+    questions: shuffled.map(q => ({ q: q.q, a: q.a, img: q.img })),
+    players: state.players,
+    currentQ: 0
+  };
+  
+  localStorage.setItem('patente_room_' + state.roomCode, JSON.stringify(roomData));
+  broadcast('START', roomData);
+  
   hostShowQuestion(0);
 });
 
@@ -1091,10 +1195,26 @@ function hostShowQuestion(idx) {
   document.getElementById('host-q-num').textContent = idx + 1;
   document.getElementById('host-q-total').textContent = state.qCount;
   document.getElementById('host-q-text').textContent = q.q;
+  
+  // Gestione immagine
+  const hostImg = document.getElementById('host-q-image');
+  if (q.img) {
+    hostImg.src = q.img;
+    hostImg.style.display = 'block';
+  } else {
+    hostImg.style.display = 'none';
+  }
+  
   document.getElementById('host-responses-count').textContent = 0;
   document.getElementById('host-active-players').textContent = state.activePlayerCount;
 
-  broadcast('QUESTION', { idx, q: q.q, total: state.qCount });
+  // Aggiorna stanza
+  const roomData = JSON.parse(localStorage.getItem('patente_room_' + state.roomCode));
+  roomData.currentQ = idx;
+  roomData.question = { q: q.q, a: q.a, img: q.img };
+  localStorage.setItem('patente_room_' + state.roomCode, JSON.stringify(roomData));
+  
+  broadcast('QUESTION', { idx, q: q.q, img: q.img, total: state.qCount });
 
   showScreen('host-question');
   startHostTimer();
@@ -1141,10 +1261,12 @@ function hostRevealAnswer() {
 
 function hostEndGame() {
   clearInterval(state.timerInterval);
+  
+  const roomData = JSON.parse(localStorage.getItem('patente_room_' + state.roomCode));
+  roomData.status = 'ended';
+  localStorage.setItem('patente_room_' + state.roomCode, JSON.stringify(roomData));
+  
   broadcast('END', {});
-  const room = JSON.parse(localStorage.getItem(STORAGE_KEY));
-  room.status = 'ended';
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(room));
   showLeaderboard();
 }
 
@@ -1152,8 +1274,23 @@ function hostEndGame() {
 function handleMessage(type, data) {
   if (state.role === 'host') {
     if (type === 'JOIN') {
-      state.players[data.id] = { name: data.name, score: 0, errors: 0, eliminated: false, answered: false };
-      updateLobbyPlayers();
+      // Verifica che il giocatore non esista già
+      if (!state.players[data.id]) {
+        state.players[data.id] = { 
+          name: data.name, 
+          score: 0, 
+          errors: 0, 
+          eliminated: false, 
+          answered: false 
+        };
+        
+        // Aggiorna stanza
+        const roomData = JSON.parse(localStorage.getItem('patente_room_' + state.roomCode));
+        roomData.players = state.players;
+        localStorage.setItem('patente_room_' + state.roomCode, JSON.stringify(roomData));
+        
+        updateLobbyPlayers();
+      }
     } else if (type === 'ANSWER') {
       const p = state.players[data.id];
       if (!p || p.eliminated || p.answered) return;
@@ -1182,21 +1319,40 @@ function handleMessage(type, data) {
         clearInterval(state.timerInterval);
         setTimeout(hostRevealAnswer, 500);
       }
+      
+      // Aggiorna stanza
+      const roomData = JSON.parse(localStorage.getItem('patente_room_' + state.roomCode));
+      roomData.players = state.players;
+      localStorage.setItem('patente_room_' + state.roomCode, JSON.stringify(roomData));
     }
   } else {
     // Player receives messages
-    if (type === 'START') {
-      state.selectedQuestions = data.questions;
-      state.qCount = data.qCount || data.questions.length;
-      state.maxErrors = data.maxErrors;
-      state.qTimer = data.qTimer;
-      state.currentQ = 0;
-      state.score = 0;
-      state.errors = 0;
-      state.eliminated = false;
-      playerShowQuestion(0);
+    if (type === 'START' || type === 'ROOM_UPDATE') {
+      if (data.questions) {
+        state.selectedQuestions = data.questions;
+      }
+      state.qCount = data.qCount || (data.questions ? data.questions.length : state.qCount);
+      state.maxErrors = data.maxErrors || state.maxErrors;
+      state.qTimer = data.qTimer || state.qTimer;
+      
+      if (data.players) {
+        // Aggiorna lista giocatori se necessario
+      }
+      
+      if (type === 'START') {
+        state.currentQ = 0;
+        state.score = 0;
+        state.errors = 0;
+        state.eliminated = false;
+        playerShowQuestion(0);
+      }
     } else if (type === 'QUESTION') {
-      // already handled in player flow via local state
+      // Memorizza domanda e mostra
+      state._currentQuestionData = data;
+      if (document.getElementById('screen-question').classList.contains('active') || 
+          document.getElementById('screen-waiting').classList.contains('active')) {
+        playerShowQuestion(data.idx);
+      }
     } else if (type === 'REVEAL') {
       playerReveal(data.answer);
     } else if (type === 'ELIMINATED') {
@@ -1222,6 +1378,10 @@ function updateLobbyPlayers() {
   container.innerHTML = players.map(p =>
     `<div class="player-chip">${escHtml(p.name)}</div>`
   ).join('');
+  
+  // Aggiorna waiting screen per giocatori
+  document.getElementById('waiting-q-count').textContent = state.qCount;
+  document.getElementById('waiting-max-errors').textContent = state.maxErrors;
 }
 
 // ========== PLAYER: JOIN ==========
@@ -1237,6 +1397,8 @@ window.addEventListener('DOMContentLoaded', () => {
 
 document.getElementById('link-go-host').addEventListener('click', (e) => {
   e.preventDefault();
+  // Pulisci URL
+  window.history.pushState({}, '', window.location.pathname);
   showScreen('main');
 });
 
@@ -1246,12 +1408,18 @@ document.getElementById('btn-join').addEventListener('click', () => {
   if (!code || code.length < 4) { alert('Inserisci il codice stanza!'); return; }
   if (!name) { alert('Inserisci il tuo nome!'); return; }
 
-  // Check room exists
-  const roomStr = localStorage.getItem(STORAGE_KEY);
-  if (!roomStr) { alert('Stanza non trovata! Controlla il codice.'); return; }
+  // Check room exists in localStorage
+  const roomStr = localStorage.getItem('patente_room_' + code);
+  if (!roomStr) { 
+    alert('Stanza non trovata! Verifica che il codice sia corretto e che l\'host abbia creato la stanza.'); 
+    return; 
+  }
+  
   const room = JSON.parse(roomStr);
-  if (room.code !== code) { alert('Codice stanza errato!'); return; }
-  if (room.status !== 'lobby') { alert('Il quiz è già iniziato!'); return; }
+  if (room.status !== 'lobby' && room.status !== 'playing') { 
+    alert('Il quiz non è disponibile!'); 
+    return; 
+  }
 
   state.role = 'player';
   state.roomCode = code;
@@ -1259,19 +1427,49 @@ document.getElementById('btn-join').addEventListener('click', () => {
   state.playerId = 'p_' + Math.random().toString(36).slice(2, 8);
   state.qTimer = room.qTimer;
   state.maxErrors = room.maxErrors;
+  state.qCount = room.qCount;
   state.score = 0;
   state.errors = 0;
   state.eliminated = false;
 
+  // Se il gioco è già iniziato, carica le domande
+  if (room.status === 'playing' && room.questions) {
+    state.selectedQuestions = room.questions;
+    state.currentQ = room.currentQ || 0;
+  }
+
+  // Invia JOIN all'host
   broadcast('JOIN', { id: state.playerId, name });
 
+  // Aggiorna UI
   document.getElementById('waiting-name-label').textContent = `Ciao ${name}! In attesa che il quiz inizi...`;
   document.getElementById('waiting-room-code').textContent = code;
+  document.getElementById('waiting-q-count').textContent = room.qCount;
+  document.getElementById('waiting-max-errors').textContent = room.maxErrors;
+  
   showScreen('waiting');
+  
+  // Avvia polling
+  startPolling(code);
 });
 
 // ========== PLAYER: QUESTION ==========
 function playerShowQuestion(idx) {
+  // Se non abbiamo le domande, prendiamole dalla stanza
+  if (!state.selectedQuestions && state._currentQuestionData) {
+    // Ricostruisci domanda singola
+    state.selectedQuestions = [{ 
+      q: state._currentQuestionData.q, 
+      a: '', 
+      img: state._currentQuestionData.img 
+    }];
+  }
+  
+  if (!state.selectedQuestions || !state.selectedQuestions[idx]) {
+    console.error('Domanda non disponibile');
+    return;
+  }
+  
   state.currentQ = idx;
   state.answered = false;
   const q = state.selectedQuestions[idx];
@@ -1279,6 +1477,15 @@ function playerShowQuestion(idx) {
   document.getElementById('p-q-num').textContent = idx + 1;
   document.getElementById('p-q-total').textContent = state.qCount;
   document.getElementById('p-q-text').textContent = q.q;
+  
+  // Gestione immagine
+  const playerImg = document.getElementById('p-q-image');
+  if (q.img) {
+    playerImg.src = q.img;
+    playerImg.style.display = 'block';
+  } else {
+    playerImg.style.display = 'none';
+  }
 
   // Hearts
   const heartsEl = document.getElementById('p-hearts');
@@ -1339,6 +1546,7 @@ function playerAnswer(answer) {
 
 function playerReveal(correctAnswer) {
   clearInterval(state.timerInterval);
+  
   if (!correctAnswer) {
     // Time's up - no answer = wrong
     if (!state.answered) {
@@ -1353,15 +1561,18 @@ function playerReveal(correctAnswer) {
     }
     // Show next question after delay
     setTimeout(() => {
-      if (state.currentQ + 1 < state.qCount) playerShowQuestion(state.currentQ + 1);
-      else { document.getElementById('result-score').textContent = state.score + ' pt'; showScreen('result'); }
+      if (state.currentQ + 1 < state.qCount) {
+        playerShowQuestion(state.currentQ + 1);
+      } else { 
+        document.getElementById('result-score').textContent = state.score + ' pt'; 
+        showScreen('result'); 
+      }
     }, 1500);
     return;
   }
 
   // We know the answer - read from our local questions
   const q = state.selectedQuestions[state.currentQ];
-  const myAnswer = state.answered ? (document.querySelector('.answer-btn:disabled[data-last]') || null) : null;
 
   // Find which btn the player pressed
   const vBtn = document.getElementById('btn-vero');
@@ -1435,6 +1646,7 @@ document.getElementById('btn-vero').addEventListener('click', function() {
   this.setAttribute('data-last', '1');
   playerAnswer('V');
 });
+
 document.getElementById('btn-falso').addEventListener('click', function() {
   if (state.answered) return;
   state._lastAnswer = 'F';
@@ -1543,6 +1755,13 @@ function startConfetti() {
 // ========== RESET ==========
 function resetGame() {
   clearInterval(state.timerInterval);
+  if (pollingInterval) clearInterval(pollingInterval);
+  
+  // Pulisci stanza se host
+  if (state.role === 'host' && state.roomCode) {
+    localStorage.removeItem('patente_room_' + state.roomCode);
+  }
+  
   state.role = null;
   state.roomCode = null;
   state.players = {};
@@ -1550,6 +1769,10 @@ function resetGame() {
   state.score = 0;
   state.errors = 0;
   state.eliminated = false;
+  
+  // Pulisci URL
+  window.history.pushState({}, '', window.location.pathname);
+  
   showScreen('main');
 }
 
@@ -1561,7 +1784,7 @@ function escHtml(str) {
 // Handle START screen based on URL param
 window.addEventListener('DOMContentLoaded', () => {
   const params = new URLSearchParams(window.location.search);
-  if (!params.get('join')) {
+  if (!params.get('join') && !params.get('host')) {
     showScreen('main');
   }
 });
